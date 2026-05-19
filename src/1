@@ -1,0 +1,200 @@
+import os
+import numpy as np
+import cv2
+import matplotlib.pyplot as plt
+import tensorflow as t
+from tensorflow.keras import layers, models
+from sklearn.preprocessing import LabelEncoder
+from ultralytics import YOLO
+
+# ------------------------- Lion Optimizer from TensorFlow -------------------------
+from tensorflow.keras.optimizers import Lion
+
+# ------------------------- U-Net Model -------------------------
+def build_unet(input_shape=(256, 256, 3)):
+    inputs = layers.Input(input_shape)
+
+    # Encoder
+    c1 = layers.Conv2D(64, (3,3), activation='relu', padding='same')(inputs)
+    c1 = layers.Conv2D(64, (3,3), activation='relu', padding='same')(c1)
+    p1 = layers.MaxPooling2D((2,2))(c1)
+
+    c2 = layers.Conv2D(128, (3,3), activation='relu', padding='same')(p1)
+    c2 = layers.Conv2D(128, (3,3), activation='relu', padding='same')(c2)
+    p2 = layers.MaxPooling2D((2,2))(c2)
+
+    c3 = layers.Conv2D(256, (3,3), activation='relu', padding='same')(p2)
+    c3 = layers.Conv2D(256, (3,3), activation='relu', padding='same')(c3)
+
+    # Decoder
+    u4 = layers.UpSampling2D((2,2))(c3)
+    c4 = layers.Conv2D(128, (3,3), activation='relu', padding='same')(u4)
+    c4 = layers.Conv2D(128, (3,3), activation='relu', padding='same')(c4)
+
+    u5 = layers.UpSampling2D((2,2))(c4)
+    c5 = layers.Conv2D(64, (3,3), activation='relu', padding='same')(u5)
+    c5 = layers.Conv2D(64, (3,3), activation='relu', padding='same')(c5)
+
+    outputs = layers.Conv2D(1, (1,1), activation='sigmoid')(c5)
+    return models.Model(inputs, outputs)
+
+# ------------------------- Load Data -------------------------
+def load_data(directory, target_size=(256, 256)):
+    images, masks, labels = [], [], []
+    label_encoder = LabelEncoder()
+
+    for label in sorted(os.listdir(directory)):
+        label_dir = os.path.join(directory, label)
+        for filename in os.listdir(label_dir):
+            img_path = os.path.join(label_dir, filename)
+            image = cv2.imread(img_path)
+            if image is None:
+                continue
+            image = cv2.resize(image, target_size) / 255.0
+
+            mask_path = img_path.replace("images", "masks")
+            mask = cv2.imread(mask_path, cv2.IMREAD_GRAYSCALE)
+            if mask is not None:
+                mask = cv2.resize(mask, target_size)
+                mask = (mask > 127).astype(np.float32)
+            else:
+                mask = np.zeros(target_size)
+
+            images.append(image)
+            masks.append(mask)
+            labels.append(label)
+
+    images = np.array(images)
+    masks = np.expand_dims(np.array(masks), axis=-1)
+    labels = label_encoder.fit_transform(labels)
+
+    return images, masks, labels, label_encoder
+
+# ------------------------- Load Train/Test Data -------------------------
+data_dir = "/content/drive/MyDrive/archive (2)/Herlev Dataset"
+train_images, train_masks, train_labels, label_encoder = load_data(os.path.join(data_dir, "train"))
+test_images, test_masks, test_labels, _ = load_data(os.path.join(data_dir, "test"))
+
+# ------------------------- Train U-Net with Lion Optimizer -------------------------
+unet = build_unet()
+unet.compile(optimizer=Lion(learning_rate=1e-4),
+              loss='binary_crossentropy',
+              metrics=['accuracy'])
+history = unet.fit(train_images, train_masks, epochs=5, batch_size=8, validation_data=(test_images, test_masks))
+unet.save("unet_model_with_lion.h5")
+
+# ------------------------- Validation Graph -------------------------
+plt.figure(figsize=(12, 5))
+
+# Plot Loss
+plt.subplot(1, 2, 1)
+plt.plot(history.history['loss'], label='Train Loss', marker='o')
+plt.plot(history.history['val_loss'], label='Val Loss', marker='o')
+plt.title("Loss Curve")
+plt.xlabel("Epochs")
+plt.ylabel("Loss")
+plt.legend()
+
+# Plot Accuracy
+plt.subplot(1, 2, 2)
+plt.plot(history.history['accuracy'], label='Train Acc', marker='o')
+plt.plot(history.history['val_accuracy'], label='Val Acc', marker='o')
+plt.title("Accuracy Curve")
+plt.xlabel("Epochs")
+plt.ylabel("Accuracy")
+plt.legend()
+
+plt.tight_layout()
+plt.show()
+
+# ------------------------- Train YOLOv8 -------------------------
+yolo_model = YOLO("yolov8n-cls.pt")
+yolo_model.train(data=data_dir, epochs=5, imgsz=256)
+yolo_model.export(format="onnx")
+
+# ------------------------- Predict on New Image -------------------------
+def predict_on_new_image(image_path):
+    image = cv2.imread(image_path)
+    image = cv2.resize(image, (256, 256)) / 255.0
+    pred_mask = unet.predict(np.expand_dims(image, 0))[0]
+    yolo_results = yolo_model(image_path)
+
+    plt.figure(figsize=(12, 4))
+    plt.subplot(1, 3, 1); plt.imshow(image); plt.title("Input Image")
+    plt.subplot(1, 3, 2); plt.imshow(pred_mask.squeeze(), cmap='gray'); plt.title("Predicted Mask")
+    label = "Cancer" if yolo_results[0].probs.top1conf > 0.5 else "Not Cancer"
+    plt.subplot(1, 3, 3); plt.text(0.5, 0.5, label, fontsize=20, ha='center'); plt.title("Classification Result")
+    plt.axis("off")
+    plt.show()
+
+# Test
+predict_on_new_image("/content/drive/MyDrive/sodapdf-converted.jpg")
+
+
+--- Classifier Image Code ---
+
+import cv2
+import numpy as np
+import matplotlib.pyplot as plt
+from tensorflow.keras.models import load_model
+from ultralytics import YOLO
+
+# Load the U-Net segmentation model (Keras format)
+seg_model = load_model("/content/drive/MyDrive/unet_model_with_lion.h5", compile=False)
+
+# Load the YOLOv8 classification model (ONNX format)
+cls_model = YOLO("/content/drive/MyDrive/runs/classify/train2/weights/best.onnx")
+
+# Read and preprocess the image
+image_path = "/content/drive/MyDrive/project-img/209522940-209522991-001.BMP"
+image_bgr = cv2.imread(image_path)
+image_rgb = cv2.cvtColor(image_bgr, cv2.COLOR_BGR2RGB)
+image_resized = cv2.resize(image_rgb, (256, 256))
+
+# Normalize for U-Net input
+input_image = image_resized / 255.0
+input_image = np.expand_dims(input_image, axis=0)
+
+# Predict segmentation mask using U-Net
+pred_mask = seg_model.predict(input_image)[0]
+pred_mask = (pred_mask.squeeze() > 0.5).astype(np.uint8)
+
+# Predict class using YOLOv8 classifier
+cls_results = cls_model.predict(source=image_resized, imgsz=256, verbose=False)
+probs = cls_results[0].probs
+pred_class_index = probs.top1
+pred_class_name = cls_model.names[pred_class_index]
+confidence = probs.data[pred_class_index].item()
+
+# Define cancerous classes
+cancerous_classes = [
+    "light_dysplastic",
+    "moderate_dysplastic",
+    "severe_dysplastic",
+    "carcinoma_in_situ"
+]
+
+# Determine the final diagnosis
+status = "Cancerous" if pred_class_name in cancerous_classes else "Non-Cancerous"
+
+# Display results
+plt.figure(figsize=(15, 5))
+
+plt.subplot(1, 3, 1)
+plt.imshow(image_resized)
+plt.title("Input Image")
+plt.axis("off")
+
+plt.subplot(1, 3, 2)
+plt.imshow(pred_mask, cmap='gray')
+plt.title("Predicted Mask (U-Net)")
+plt.axis("off")
+
+plt.subplot(1, 3, 3)
+plt.imshow(image_resized)
+plt.imshow(pred_mask, cmap='Reds', alpha=0.5)
+plt.title(f"{status}\nClass: {pred_class_name}\nConfidence: {confidence:.2f}")
+plt.axis("off")
+
+plt.tight_layout()
+plt.show()
