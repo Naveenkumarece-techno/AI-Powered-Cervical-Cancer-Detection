@@ -96,7 +96,3 @@ Cloud-based Medical Screening Platform
 Clinical Validation using Larger Datasets
 Multi-class Cervical Cancer Stage Prediction
 Hybrid Deep Learning Architectures
-Authors
-NAVEEN KUMAR R
-MADHAN S
-ESWAR D
